@@ -67,6 +67,25 @@ test('a note with a weblink annotation gets the link appended to content', () =>
   });
 });
 
+test('a note whose label maps to 備忘錄 gets a memo-shaped row, not the shared 子標籤 shape', () => {
+  const note = {
+    title: '採買清單',
+    textContent: '買米、買油',
+    labels: [{ name: '採買' }],
+  };
+
+  assert.deepEqual(convertKeepNote(note), {
+    targetSheet: '備忘錄',
+    row: {
+      title: '採買清單',
+      content: '買米、買油',
+      completed: false,
+      dueDate: '',
+      reminder: '',
+    },
+  });
+});
+
 test('a multi-labelled note classifies by the first label and annotates the rest into content', () => {
   const note = {
     title: '備份指令',

@@ -17,6 +17,19 @@ export function convertKeepNote(note) {
     targetSheet = resolveTargetSheet(subTag1, subTag2);
   }
 
+  if (targetSheet === '備忘錄') {
+    return {
+      targetSheet,
+      row: {
+        title: note.title,
+        content,
+        completed: false,
+        dueDate: '',
+        reminder: '',
+      },
+    };
+  }
+
   return {
     targetSheet,
     row: {
