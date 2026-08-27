@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<title>個人資料整理系統</title>
+<style>
+  body { font-family: "Microsoft JhengHei", sans-serif; margin: 2rem; }
+  select, button { font-size: 1rem; padding: 0.3rem 0.6rem; margin-right: 0.5rem; }
+  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+  th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+  th { background: #f0f0f0; }
+  #status { color: #666; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+  <h1>個人資料整理系統（開發中）</h1>
+
+  <label>API 網址：
+    <input id="apiUrl" type="text" size="70" placeholder="貼上 Apps Script Web App 網址" />
+  </label>
+  <br /><br />
+
+  <label>工作表：
+    <select id="sheetName">
+      <option>工作紀錄</option>
+      <option>環境疑難雜症</option>
+      <option>學習筆記</option>
+      <option>備忘錄</option>
+    </select>
+  </label>
+  <button id="loadBtn">讀取</button>
+  <div id="status"></div>
+
+  <table id="resultTable" style="display:none;">
+    <thead><tr id="headerRow"></tr></thead>
+    <tbody id="bodyRows"></tbody>
+  </table>
+
+  <script>
+    const apiUrlInput = document.getElementById('apiUrl');
+    const sheetSelect = document.getElementById('sheetName');
+    const statusEl = document.getElementById('status');
+    const table = document.getElementById('resultTable');
+    const headerRow = document.getElementById('headerRow');
+    const bodyRows = document.getElementById('bodyRows');
+
+    // 記住上次填過的網址，下次打開不用重貼
+    apiUrlInput.value = localStorage.getItem('apiUrl') || '';
+
+    document.getElementById('loadBtn').addEventListener('click', async () => {
+      const apiUrl = apiUrlInput.value.trim();
+      const sheet = sheetSelect.value;
+      if (!apiUrl) {
+        statusEl.textContent = '請先貼上 API 網址';
+        return;
+      }
+      localStorage.setItem('apiUrl', apiUrl);
+
+      statusEl.textContent = '讀取中...';
+      table.style.display = 'none';
+      try {
+        const res = await fetch(`${apiUrl}?sheet=${encodeURIComponent(sheet)}`);
+        const data = await res.json();
+        if (data.error) {
+          statusEl.textContent = '錯誤：' + data.error;
+          return;
+        }
+        renderTable(data.rows);
+        statusEl.textContent = `共 ${data.rows.length} 筆（${sheet}）`;
+      } catch (err) {
+        statusEl.textContent = '讀取失敗：' + err.message;
+      }
+    });
+
+    function renderTable(rows) {
+      headerRow.innerHTML = '';
+      bodyRows.innerHTML = '';
+      if (rows.length === 0) {
+        table.style.display = 'none';
+        return;
+      }
+      const columns = Object.keys(rows[0]);
+      for (const col of columns) {
+        const th = document.createElement('th');
+        th.textContent = col;
+        headerRow.appendChild(th);
+      }
+      for (const row of rows) {
+        const tr = document.createElement('tr');
+        for (const col of columns) {
+          const td = document.createElement('td');
+          td.innerHTML = String(row[col] ?? '');
+          tr.appendChild(td);
+        }
+        bodyRows.appendChild(tr);
+      }
+      table.style.display = 'table';
+    }
+  </script>
+</body>
+</html>
