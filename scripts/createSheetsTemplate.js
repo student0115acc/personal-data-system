@@ -130,9 +130,39 @@ const freezeRequests = SHEETS.map((s) => ({
     fields: 'gridProperties.frozenRowCount',
   },
 }));
+// 建立時間／更新時間欄位要顯示成日期時間，不然會顯示成一串序號數字
+const dateTimeFormat = { numberFormat: { type: 'DATE_TIME', pattern: 'yyyy-mm-dd hh:mm:ss' } };
+const dateFormat = { numberFormat: { type: 'DATE', pattern: 'yyyy-mm-dd' } };
+const dateColumnRequests = [
+  // 工作紀錄／環境疑難雜症／學習筆記：G欄(建立時間)~H欄(更新時間)
+  ...['工作紀錄', '環境疑難雜症', '學習筆記'].map((title) => ({
+    repeatCell: {
+      range: { sheetId: sheetIdByTitle[title], startRowIndex: 1, startColumnIndex: 6, endColumnIndex: 8 },
+      cell: { userEnteredFormat: dateTimeFormat },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  })),
+  // 帳密資料：H欄(建立時間)~I欄(更新時間)
+  {
+    repeatCell: {
+      range: { sheetId: sheetIdByTitle['帳密資料'], startRowIndex: 1, startColumnIndex: 7, endColumnIndex: 9 },
+      cell: { userEnteredFormat: dateTimeFormat },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  },
+  // 備忘錄：F欄(截止日期)
+  {
+    repeatCell: {
+      range: { sheetId: sheetIdByTitle['備忘錄'], startRowIndex: 1, startColumnIndex: 5, endColumnIndex: 6 },
+      cell: { userEnteredFormat: dateFormat },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  },
+];
+
 await sheets.spreadsheets.batchUpdate({
   spreadsheetId,
-  requestBody: { requests: [...formatRequests, ...freezeRequests] },
+  requestBody: { requests: [...formatRequests, ...freezeRequests, ...dateColumnRequests] },
 });
 
 const directoryRows = SHEETS.filter((s) => s.title !== '目錄').map((s) => [
