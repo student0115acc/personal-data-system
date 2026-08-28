@@ -38,10 +38,31 @@
   <button id="loadBtn">讀取</button>
   <div id="status"></div>
 
+  <div id="filterBar" style="margin-top:0.8rem; display:none;">
+    <label>關鍵字：<input id="keywordFilter" type="text" size="30" placeholder="搜尋標題/內容/子標籤" /></label>
+    <label id="subTag1FilterLabel">子標籤①：
+      <select id="subTag1Filter"><option value="">全部</option></select>
+    </label>
+    <label id="subTag2FilterLabel">子標籤②：
+      <select id="subTag2Filter"><option value="">全部</option></select>
+    </label>
+  </div>
+
   <table id="resultTable" style="display:none;">
     <thead><tr id="headerRow"></tr></thead>
     <tbody id="bodyRows"></tbody>
   </table>
+
+  <fieldset>
+    <legend>綜合搜尋（同時查工作紀錄／環境疑難雜症／學習筆記／備忘錄）</legend>
+    <label>關鍵字：<input id="globalKeyword" type="text" size="30" /></label>
+    <button id="globalSearchBtn">搜尋全部</button>
+    <div id="globalStatus"></div>
+    <table id="globalResultTable" style="display:none;">
+      <thead><tr><th>工作表</th><th>標題</th><th>內容</th></tr></thead>
+      <tbody id="globalResultBody"></tbody>
+    </table>
+  </fieldset>
 
   <fieldset>
     <legend id="formTitle">新增一筆到目前選的工作表</legend>
@@ -81,9 +102,26 @@
     const addBtn = document.getElementById('addBtn');
     const cancelEditBtn = document.getElementById('cancelEditBtn');
 
+    const filterBar = document.getElementById('filterBar');
+    const keywordFilter = document.getElementById('keywordFilter');
+    const subTag1Filter = document.getElementById('subTag1Filter');
+    const subTag2Filter = document.getElementById('subTag2Filter');
+    const subTag1FilterLabel = document.getElementById('subTag1FilterLabel');
+    const subTag2FilterLabel = document.getElementById('subTag2FilterLabel');
+
+    // 每張表用哪兩個欄位當子標籤①②做篩選；備忘錄沒有子標籤，不顯示篩選。
+    const TAG_COLUMNS = {
+      工作紀錄: ['子標籤①', '子標籤②'],
+      環境疑難雜症: ['子標籤①', '子標籤②'],
+      學習筆記: ['子標籤①', '子標籤②'],
+      帳密資料: ['子標籤①（對象/系統）', '子標籤②（類型）'],
+    };
+
     apiUrlInput.value = localStorage.getItem('apiUrl') || '';
 
     let editingRow = null;
+    let currentSheetRows = []; // 目前工作表「全部」已讀取的資料（篩選前）
+    let currentSheet = '';
 
     function fieldInputId(fieldName) {
       return 'field_' + fieldName.replace(/[^\w]/g, '_');
@@ -162,8 +200,10 @@
           return;
         }
         const visibleRows = data.rows.filter((r) => r['已刪除'] !== true && r['已刪除'] !== 'TRUE');
-        renderTable(visibleRows, sheet);
-        statusEl.textContent = `共 ${visibleRows.length} 筆（${sheet}，不含已刪除）`;
+        currentSheetRows = visibleRows;
+        currentSheet = sheet;
+        setupFilterBar(sheet, visibleRows);
+        applyFilters();
       } catch (err) {
         statusEl.textContent = '讀取失敗：' + err.message;
       }
@@ -173,6 +213,66 @@
       exitEditMode();
       loadSheet();
     });
+
+    // 依目前工作表決定要不要顯示子標籤篩選、把選項填好（子標籤②只列
+    // 出屬於目前選定子標籤①底下的選項，跟新增表單一樣是階層式篩選）。
+    function setupFilterBar(sheet, rows) {
+      filterBar.style.display = 'block';
+      keywordFilter.value = '';
+      const tagCols = TAG_COLUMNS[sheet];
+      const hasTags = Boolean(tagCols);
+      subTag1FilterLabel.style.display = hasTags ? 'inline' : 'none';
+      subTag2FilterLabel.style.display = hasTags ? 'inline' : 'none';
+      subTag1Filter.innerHTML = '<option value="">全部</option>';
+      subTag2Filter.innerHTML = '<option value="">全部</option>';
+      if (!hasTags) return;
+      const [col1] = tagCols;
+      const uniqueTag1 = [...new Set(rows.map((r) => r[col1]).filter(Boolean))].sort();
+      for (const v of uniqueTag1) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        subTag1Filter.appendChild(opt);
+      }
+    }
+
+    subTag1Filter.addEventListener('change', () => {
+      const tagCols = TAG_COLUMNS[currentSheet];
+      if (!tagCols) return;
+      const [col1, col2] = tagCols;
+      subTag2Filter.innerHTML = '<option value="">全部</option>';
+      const chosen1 = subTag1Filter.value;
+      const scoped = chosen1 ? currentSheetRows.filter((r) => r[col1] === chosen1) : currentSheetRows;
+      const uniqueTag2 = [...new Set(scoped.map((r) => r[col2]).filter(Boolean))].sort();
+      for (const v of uniqueTag2) {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        subTag2Filter.appendChild(opt);
+      }
+      applyFilters();
+    });
+    subTag2Filter.addEventListener('change', applyFilters);
+    keywordFilter.addEventListener('input', applyFilters);
+
+    function applyFilters() {
+      const tagCols = TAG_COLUMNS[currentSheet];
+      const keyword = keywordFilter.value.trim().toLowerCase();
+      const filtered = currentSheetRows.filter((row) => {
+        if (tagCols) {
+          const [col1, col2] = tagCols;
+          if (subTag1Filter.value && row[col1] !== subTag1Filter.value) return false;
+          if (subTag2Filter.value && row[col2] !== subTag2Filter.value) return false;
+        }
+        if (keyword) {
+          const haystack = Object.values(row).join(' ').toLowerCase();
+          if (!haystack.includes(keyword)) return false;
+        }
+        return true;
+      });
+      renderTable(filtered, currentSheet);
+      statusEl.textContent = `共 ${filtered.length} 筆（${currentSheet}，全部 ${currentSheetRows.length} 筆，不含已刪除）`;
+    }
 
     function renderTable(rows, sheet) {
       headerRow.innerHTML = '';
@@ -336,6 +436,57 @@
         exitEditMode();
       } catch (err) {
         addStatusEl.textContent = '寫入失敗：' + err.message;
+      }
+    });
+
+    // 綜合搜尋：同時查詢 4 張內容工作表，合併結果並標示來源工作表。
+    const GLOBAL_SEARCH_SHEETS = ['工作紀錄', '環境疑難雜症', '學習筆記', '備忘錄'];
+    document.getElementById('globalSearchBtn').addEventListener('click', async () => {
+      const apiUrl = apiUrlInput.value.trim();
+      const keyword = document.getElementById('globalKeyword').value.trim().toLowerCase();
+      const globalStatus = document.getElementById('globalStatus');
+      const globalTable = document.getElementById('globalResultTable');
+      const globalBody = document.getElementById('globalResultBody');
+      if (!apiUrl) {
+        globalStatus.textContent = '請先貼上 API 網址';
+        return;
+      }
+      if (!keyword) {
+        globalStatus.textContent = '請輸入關鍵字';
+        return;
+      }
+      globalStatus.textContent = '搜尋中（依序查 4 張表）...';
+      globalTable.style.display = 'none';
+      globalBody.innerHTML = '';
+      try {
+        const results = [];
+        for (const sheet of GLOBAL_SEARCH_SHEETS) {
+          const data = await jsonp(`${apiUrl}?sheet=${encodeURIComponent(sheet)}`);
+          if (data.error) continue;
+          for (const row of data.rows) {
+            if (row['已刪除'] === true || row['已刪除'] === 'TRUE') continue;
+            const haystack = Object.values(row).join(' ').toLowerCase();
+            if (haystack.includes(keyword)) {
+              results.push({ sheet, row });
+            }
+          }
+        }
+        for (const { sheet, row } of results) {
+          const tr = document.createElement('tr');
+          const sheetTd = document.createElement('td');
+          sheetTd.textContent = sheet;
+          const titleTd = document.createElement('td');
+          titleTd.textContent = row['標題'] ?? '';
+          const contentTd = document.createElement('td');
+          const content = String(row['內容'] ?? '');
+          contentTd.textContent = content.length > 100 ? content.slice(0, 100) + '...' : content;
+          tr.append(sheetTd, titleTd, contentTd);
+          globalBody.appendChild(tr);
+        }
+        globalTable.style.display = results.length > 0 ? 'table' : 'none';
+        globalStatus.textContent = `共找到 ${results.length} 筆`;
+      } catch (err) {
+        globalStatus.textContent = '搜尋失敗：' + err.message;
       }
     });
 
