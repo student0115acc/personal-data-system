@@ -2,7 +2,12 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>個人資料整理系統</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#2c6e49" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
 <style>
   body { font-family: "Microsoft JhengHei", sans-serif; margin: 2rem; }
   select, button, input, textarea { font-size: 1rem; padding: 0.3rem 0.6rem; }
@@ -86,6 +91,15 @@
     // 主要防「不小心分享 Sheets 檢視權限」，不是防真正的攻擊者，所以
     // 不需要每次登入輸入密碼解鎖。
     const PASSWORD_PASSPHRASE = 'personal-data-system-2026-verdipeng';
+
+    // 註冊 Service Worker，讓瀏覽器認得這是可安裝的 PWA（可以「加到主
+    // 畫面」）。sw.js 本身不做任何離線快取，純粹是安裝條件需要它存在。
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {
+        // 用 file:// 或本機沒設定 HTTPS 時可能會失敗，安裝功能就是用不了，
+        // 但不影響其他功能，不用跳錯誤訊息打擾使用者。
+      });
+    }
 
     // 每張工作表在「新增/編輯」表單裡要出現哪些欄位，依序決定表單長相。
     // 陣列項目可以是純字串（預設文字輸入框），也可以是
