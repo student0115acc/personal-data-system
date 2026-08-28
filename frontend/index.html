@@ -108,12 +108,12 @@
       帳密資料: ['子標籤①（對象/系統）', '子標籤②（類型）', '網站/系統名稱', '帳號', '密碼', '網址', '備註'],
       採購紀錄: [
         '購買日期',
-        '歸屬/請款單位',
+        { name: '歸屬/請款單位', type: 'dynamic-select', settingsKey: '採購-歸屬單位' },
         '使用單位/經手人',
         { name: '採購類型', type: 'select', options: ['公用採購', '個人採購'] },
         '物品名稱',
         '金額（台幣）',
-        '支付卡別',
+        { name: '支付卡別', type: 'dynamic-select', settingsKey: '採購-支付卡別' },
         '信用卡回饋金',
         { name: '款項屬性', type: 'select', options: ['需請款撥款', '自用', '回饋金已抵用'] },
         { name: '到貨狀態', type: 'select', options: ['未到貨', '已到貨'] },
@@ -172,17 +172,53 @@
       return formFieldsEl.querySelector(`[data-field-name="${CSS.escape(name)}"]`);
     }
 
+    // 「設定」表驅動的下拉選項（規格書 4.7 節：選項不寫死在程式碼，
+    // 使用者要新增選項時直接去 Sheets 的「設定」表加一列就好）。
+    let settingsByType = {};
+    let settingsLoaded = false;
+    async function ensureSettingsLoaded() {
+      if (settingsLoaded) return;
+      const apiUrl = apiUrlInput.value.trim();
+      if (!apiUrl) return;
+      try {
+        const data = await jsonp(`${apiUrl}?sheet=${encodeURIComponent('設定')}`);
+        if (data.error) return;
+        settingsByType = {};
+        for (const row of data.rows) {
+          const key = row['設定類型'];
+          if (!key) continue;
+          (settingsByType[key] ??= []).push(row['選項值']);
+        }
+        settingsLoaded = true;
+      } catch {
+        // 讀不到設定表就讓動態下拉先空著，不擋住其他功能
+      }
+    }
+
     function buildForm() {
       const sheet = sheetSelect.value;
       const fieldSpecs = (SHEET_FIELD_CONFIGS[sheet] || []).map(normalizeField);
       formFieldsEl.innerHTML = '';
-      for (const { name, type, options } of fieldSpecs) {
+      for (const { name, type, options, settingsKey } of fieldSpecs) {
         const label = document.createElement('label');
         label.textContent = name;
         let input;
         if (type === 'select') {
           input = document.createElement('select');
           for (const opt of options) {
+            const optionEl = document.createElement('option');
+            optionEl.value = opt;
+            optionEl.textContent = opt;
+            input.appendChild(optionEl);
+          }
+        } else if (type === 'dynamic-select') {
+          input = document.createElement('select');
+          const dynOptions = settingsByType[settingsKey] || [];
+          const blankOpt = document.createElement('option');
+          blankOpt.value = '';
+          blankOpt.textContent = dynOptions.length ? '（請選擇）' : '（設定表尚無選項，去 Sheets 新增一列）';
+          input.appendChild(blankOpt);
+          for (const opt of dynOptions) {
             const optionEl = document.createElement('option');
             optionEl.value = opt;
             optionEl.textContent = opt;
@@ -207,11 +243,13 @@
       }
     }
 
-    sheetSelect.addEventListener('change', () => {
+    sheetSelect.addEventListener('change', async () => {
       exitEditMode();
+      await ensureSettingsLoaded();
       buildForm();
     });
     buildForm();
+    ensureSettingsLoaded().then(buildForm);
 
     function exitEditMode() {
       editingRow = null;
@@ -272,8 +310,11 @@
       }
     }
 
-    document.getElementById('loadBtn').addEventListener('click', () => {
+    document.getElementById('loadBtn').addEventListener('click', async () => {
       exitEditMode();
+      settingsLoaded = false; // 每次按讀取都重新抓一次設定表，抓到你剛加的新選項
+      await ensureSettingsLoaded();
+      buildForm();
       loadSheet();
     });
 
