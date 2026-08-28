@@ -144,6 +144,90 @@ function requireSheet(sheetName) {
   return sheet;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// 備忘錄 Email 提醒（規格書 4.1 節定案：Email 提醒，時間驅動觸發器）
+// ─────────────────────────────────────────────────────────────────
+
+var REMINDER_DAYS_BEFORE = {
+  準時: 0,
+  提前1天: 1,
+  提前3天: 3,
+  提前1週: 7,
+};
+
+/**
+ * 每天固定時間掃描一次「備忘錄」表：還沒完成、有填截止日期＋提醒設定
+ * 的項目，若今天剛好是該提醒的日子，就寄一封 Email 到自己的 Gmail。
+ * 由時間驅動觸發器呼叫（見 createDailyReminderTrigger），不用手動執行。
+ */
+function checkAndSendReminders() {
+  var sheet = requireSheet('備忘錄');
+  var values = sheet.getDataRange().getValues();
+  var headers = values[0];
+  var colIndex = {};
+  headers.forEach(function (h, i) {
+    colIndex[h] = i;
+  });
+
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  var dueItems = [];
+  for (var i = 1; i < values.length; i++) {
+    var row = values[i];
+    var completed = row[colIndex['完成狀態']];
+    if (completed === true || completed === 'TRUE') continue;
+
+    var dueDateRaw = row[colIndex['截止日期']];
+    var reminderSetting = row[colIndex['提醒設定']];
+    if (!dueDateRaw || !reminderSetting) continue; // 規格書：沒設截止日期就不啟用提醒
+
+    var daysBefore = REMINDER_DAYS_BEFORE[reminderSetting];
+    if (daysBefore === undefined) continue;
+
+    var dueDate = new Date(dueDateRaw);
+    dueDate.setHours(0, 0, 0, 0);
+    var reminderDate = new Date(dueDate);
+    reminderDate.setDate(reminderDate.getDate() - daysBefore);
+
+    if (reminderDate.getTime() === today.getTime()) {
+      dueItems.push({
+        title: row[colIndex['標題']],
+        dueDate: dueDate,
+      });
+    }
+  }
+
+  if (dueItems.length === 0) return;
+
+  var timeZone = Session.getScriptTimeZone();
+  var body = dueItems
+    .map(function (item) {
+      return '• ' + item.title + '（截止：' + Utilities.formatDate(item.dueDate, timeZone, 'yyyy-MM-dd') + '）';
+    })
+    .join('\n');
+
+  MailApp.sendEmail({
+    to: Session.getActiveUser().getEmail(),
+    subject: '【個人資料整理系統】今日備忘錄提醒（' + dueItems.length + ' 筆）',
+    body: body,
+  });
+}
+
+/**
+ * 一次性設定用：在 Apps Script 編輯器選這個函式、按「執行」一次，
+ * 就會建立「每天早上 8 點自動跑 checkAndSendReminders」的觸發器。
+ * 重複執行也沒關係，會先清掉同名的舊觸發器再建新的，不會重複寄信。
+ */
+function createDailyReminderTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'checkAndSendReminders') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('checkAndSendReminders').timeBased().everyDays(1).atHour(8).create();
+}
+
 /**
  * 統一回應格式。有帶 ?callback= 參數就包成 JSONP（callback(json)），
  * 因為 Apps Script Web App 不支援跨網域 fetch()，前端讀取一律走

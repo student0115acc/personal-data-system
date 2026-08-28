@@ -94,7 +94,17 @@
       工作紀錄: ['子標籤①', '子標籤②', '標題', '內容'],
       環境疑難雜症: ['子標籤①', '子標籤②', '標題', '內容'],
       學習筆記: ['子標籤①', '子標籤②', '標題', '內容'],
-      備忘錄: ['標題', '內容'],
+      備忘錄: [
+        '標題',
+        '內容',
+        { name: '截止日期', type: 'date' },
+        {
+          name: '提醒設定',
+          type: 'select',
+          options: ['', '準時', '提前1天', '提前3天', '提前1週'],
+        },
+        { name: '完成狀態', type: 'checkbox' },
+      ],
       帳密資料: ['子標籤①（對象/系統）', '子標籤②（類型）', '網站/系統名稱', '帳號', '密碼', '網址', '備註'],
       採購紀錄: [
         '購買日期',
@@ -181,6 +191,9 @@
         } else if (type === 'checkbox') {
           input = document.createElement('input');
           input.type = 'checkbox';
+        } else if (type === 'date') {
+          input = document.createElement('input');
+          input.type = 'date';
         } else if (TEXTAREA_FIELDS.has(name)) {
           input = document.createElement('textarea');
           input.rows = 4;
