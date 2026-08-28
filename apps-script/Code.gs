@@ -1,14 +1,22 @@
 /**
  * 個人資料整理系統 — Apps Script API 層
  *
- * 這是「第一刀」的最小版本：只做讀取（doGet），依 ?sheet=工作表名稱
- * 回傳該工作表所有列（不含表頭），轉成陣列物件（key 用表頭）。
- * 寫入、搜尋、跨表查詢留到下一輪再加。
+ * doGet：讀取（依 ?sheet=工作表名稱，回傳該工作表所有列，每列多帶一個
+ *        _row 欄位＝這列在 Sheets 裡的實際列號，供編輯/刪除用）
+ * doPost：新增／更新／軟刪除（依 action 參數）
  *
  * 部署方式：Extensions → Apps Script（從試算表打開，綁定同一份試算表）
- * → 貼上這份程式碼 → Deploy → New deployment → Web app
+ * → 貼上這份程式碼（整個檔案一起貼，不要只貼單一函式） → Deploy →
+ *   Manage deployments → 編輯既有部署 → Version: New version → Deploy
+ *   （第一次才用 New deployment；之後改程式碼都用「編輯既有部署」，
+ *   這樣網址才不會變）
  *   → Execute as: Me
  *   → Who has access: Only myself
+ *
+ * 重要：Apps Script Web App 完全不支援 fetch()/XHR（連 mode:'no-cors'
+ * 都會被 Google 擋掉回 503，這是已知限制，不是 CORS 問題）。前端讀取
+ * 用 JSONP（<script> 標籤），寫入用隱藏表單送到隱藏 iframe，兩者都不
+ * 是 fetch，才不會被擋。
  */
 
 function doGet(e) {
@@ -24,11 +32,12 @@ function doGet(e) {
 
     var values = sheet.getDataRange().getValues();
     var headers = values[0];
-    var rows = values.slice(1).map(function (row) {
+    var rows = values.slice(1).map(function (row, i) {
       var obj = {};
-      headers.forEach(function (header, i) {
-        obj[header] = row[i];
+      headers.forEach(function (header, j) {
+        obj[header] = row[j];
       });
+      obj._row = i + 2; // Sheets 實際列號（第 1 列是表頭）
       return obj;
     });
 
@@ -39,47 +48,100 @@ function doGet(e) {
 }
 
 /**
- * 新增一列資料。參數：sheet=工作表名稱、fields=JSON字串
- * （{ 子標籤①: '...', 標題: '...', ... }，用「實際欄位名稱」當 key，
- * 不用管欄位順序，程式會自動依照該工作表目前的表頭順序組成正確的
- * 列。ID／建立時間／更新時間／已刪除／來源如果沒帶就自動補上預設值。
+ * 新增／更新／軟刪除。共用參數：sheet=工作表名稱、action=
+ * 'append'(預設) | 'update' | 'delete'。
  *
- * 前端呼叫方式：**不能用 fetch()**（連 no-cors 模式都會被 Google
- * 擋掉，回 503——這是 Apps Script Web App 對 fetch/XHR 類請求的已知
- * 限制，只有 <script> 標籤／表單送出／瀏覽器導覽不會被擋）。要用隱藏
- * 表單送出（method=POST，送到隱藏 iframe），Apps Script 這邊收到的
- * 會是表單參數（e.parameter），不是 JSON body。
+ * append：fields=JSON字串（{ 子標籤①: '...', 標題: '...', ... }，用
+ *   「實際欄位名稱」當 key，不用管順序）。ID／建立時間／更新時間／
+ *   已刪除／來源／完成狀態如果沒帶就自動補預設值。
+ *
+ * update：另外要帶 row=列號（doGet 回傳的 _row），fields 只需帶要改
+ *   的欄位，其餘欄位保持原值不變；有「更新時間」欄位的話會自動更新
+ *   成現在時間。
+ *
+ * delete：另外要帶 row=列號。軟刪除——只是把「已刪除」欄位設成
+ *   true，不會真的移除這一列。
  */
 function doPost(e) {
   try {
-    var sheetName = e.parameter.sheet;
-    var fields = JSON.parse(e.parameter.fields || '{}');
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName(sheetName);
-
-    if (!sheet) {
-      return respond({ error: '找不到工作表：' + sheetName }, null);
-    }
-
-    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    var id = Utilities.getUuid().slice(0, 8);
-    var now = new Date();
-
-    var row = headers.map(function (header) {
-      if (fields[header] !== undefined) return fields[header];
-      if (header === 'ID') return id;
-      if (header === '建立時間' || header === '更新時間') return now;
-      if (header === '已刪除') return false;
-      if (header === '完成狀態') return false;
-      if (header === '來源') return '手動新增';
-      return '';
-    });
-
-    sheet.appendRow(row);
-    return respond({ ok: true, id: id }, null);
+    var action = e.parameter.action || 'append';
+    if (action === 'update') return handleUpdate(e);
+    if (action === 'delete') return handleDelete(e);
+    return handleAppend(e);
   } catch (err) {
     return respond({ error: String(err) }, null);
   }
+}
+
+function handleAppend(e) {
+  var sheetName = e.parameter.sheet;
+  var fields = JSON.parse(e.parameter.fields || '{}');
+  var sheet = requireSheet(sheetName);
+
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var id = Utilities.getUuid().slice(0, 8);
+  var now = new Date();
+
+  var row = headers.map(function (header) {
+    if (fields[header] !== undefined) return fields[header];
+    if (header === 'ID') return id;
+    if (header === '建立時間' || header === '更新時間') return now;
+    if (header === '已刪除') return false;
+    if (header === '完成狀態') return false;
+    if (header === '來源') return '手動新增';
+    return '';
+  });
+
+  sheet.appendRow(row);
+  return respond({ ok: true, id: id }, null);
+}
+
+function handleUpdate(e) {
+  var sheetName = e.parameter.sheet;
+  var rowNumber = Number(e.parameter.row);
+  var fields = JSON.parse(e.parameter.fields || '{}');
+  var sheet = requireSheet(sheetName);
+
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var range = sheet.getRange(rowNumber, 1, 1, headers.length);
+  var current = range.getValues()[0];
+
+  var updated = headers.map(function (header, i) {
+    if (fields[header] !== undefined) return fields[header];
+    if (header === '更新時間') return new Date();
+    return current[i];
+  });
+
+  range.setValues([updated]);
+  return respond({ ok: true }, null);
+}
+
+function handleDelete(e) {
+  var sheetName = e.parameter.sheet;
+  var rowNumber = Number(e.parameter.row);
+  var sheet = requireSheet(sheetName);
+
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var deletedCol = headers.indexOf('已刪除') + 1;
+  var updatedCol = headers.indexOf('更新時間') + 1;
+
+  if (deletedCol > 0) {
+    sheet.getRange(rowNumber, deletedCol).setValue(true);
+  }
+  if (updatedCol > 0) {
+    sheet.getRange(rowNumber, updatedCol).setValue(new Date());
+  }
+
+  return respond({ ok: true }, null);
+}
+
+function requireSheet(sheetName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    throw new Error('找不到工作表：' + sheetName);
+  }
+  return sheet;
 }
 
 /**

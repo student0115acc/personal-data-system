@@ -6,7 +6,7 @@
 <style>
   body { font-family: "Microsoft JhengHei", sans-serif; margin: 2rem; }
   select, button, input, textarea { font-size: 1rem; padding: 0.3rem 0.6rem; }
-  button { margin-right: 0.5rem; }
+  button { margin-right: 0.5rem; cursor: pointer; }
   table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
   th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
   th { background: #f0f0f0; }
@@ -14,6 +14,7 @@
   fieldset { margin-top: 1.5rem; max-width: 500px; }
   fieldset label { display: block; margin-bottom: 0.6rem; }
   fieldset input, fieldset textarea { width: 100%; box-sizing: border-box; }
+  .rowActions button { font-size: 0.85rem; padding: 0.2rem 0.5rem; }
 </style>
 </head>
 <body>
@@ -41,7 +42,7 @@
   </table>
 
   <fieldset>
-    <legend>新增一筆到目前選的工作表</legend>
+    <legend id="formTitle">新增一筆到目前選的工作表</legend>
     <div id="tagFields">
       <label>子標籤①<input id="fieldSubTag1" type="text" /></label>
       <label>子標籤②<input id="fieldSubTag2" type="text" /></label>
@@ -49,6 +50,7 @@
     <label>標題<input id="fieldTitle" type="text" /></label>
     <label>內容<textarea id="fieldContent" rows="4"></textarea></label>
     <button id="addBtn">新增</button>
+    <button id="cancelEditBtn" style="display:none;">取消編輯</button>
     <div id="addStatus"></div>
   </fieldset>
 
@@ -63,16 +65,37 @@
     const fieldTitle = document.getElementById('fieldTitle');
     const fieldContent = document.getElementById('fieldContent');
     const addStatusEl = document.getElementById('addStatus');
+    const formTitle = document.getElementById('formTitle');
+    const addBtn = document.getElementById('addBtn');
+    const cancelEditBtn = document.getElementById('cancelEditBtn');
 
     // 記住上次填過的網址，下次打開不用重貼
     apiUrlInput.value = localStorage.getItem('apiUrl') || '';
+
+    // 目前正在編輯哪一列（null = 新增模式）
+    let editingRow = null;
 
     // 備忘錄沒有子標籤①②欄位，切換工作表時把那兩個輸入框藏起來
     function updateFormForSheet() {
       tagFields.style.display = sheetSelect.value === '備忘錄' ? 'none' : 'block';
     }
-    sheetSelect.addEventListener('change', updateFormForSheet);
+    sheetSelect.addEventListener('change', () => {
+      exitEditMode();
+      updateFormForSheet();
+    });
     updateFormForSheet();
+
+    function exitEditMode() {
+      editingRow = null;
+      formTitle.textContent = '新增一筆到目前選的工作表';
+      addBtn.textContent = '新增';
+      cancelEditBtn.style.display = 'none';
+      fieldTitle.value = '';
+      fieldContent.value = '';
+      if (document.getElementById('fieldSubTag1')) document.getElementById('fieldSubTag1').value = '';
+      if (document.getElementById('fieldSubTag2')) document.getElementById('fieldSubTag2').value = '';
+    }
+    cancelEditBtn.addEventListener('click', exitEditMode);
 
     // Apps Script Web App 不支援跨網域 fetch()（會被 CORS 擋下來），
     // 讀取一律改用 JSONP：動態插入 <script> 標籤載入，不受 CORS 限制。
@@ -98,6 +121,8 @@
       });
     }
 
+    let lastRows = [];
+
     async function loadSheet() {
       const apiUrl = apiUrlInput.value.trim();
       const sheet = sheetSelect.value;
@@ -115,14 +140,20 @@
           statusEl.textContent = '錯誤：' + data.error;
           return;
         }
-        renderTable(data.rows);
-        statusEl.textContent = `共 ${data.rows.length} 筆（${sheet}）`;
+        // 已刪除的資料預設不顯示（軟刪除，資料還在 Sheets 裡，只是不列出來）
+        const visibleRows = data.rows.filter((r) => r['已刪除'] !== true && r['已刪除'] !== 'TRUE');
+        lastRows = visibleRows;
+        renderTable(visibleRows);
+        statusEl.textContent = `共 ${visibleRows.length} 筆（${sheet}，不含已刪除）`;
       } catch (err) {
         statusEl.textContent = '讀取失敗：' + err.message;
       }
     }
 
-    document.getElementById('loadBtn').addEventListener('click', loadSheet);
+    document.getElementById('loadBtn').addEventListener('click', () => {
+      exitEditMode();
+      loadSheet();
+    });
 
     function renderTable(rows) {
       headerRow.innerHTML = '';
@@ -131,12 +162,17 @@
         table.style.display = 'none';
         return;
       }
-      const columns = Object.keys(rows[0]);
+      // _row 是內部用的列號，不當作一般欄位顯示
+      const columns = Object.keys(rows[0]).filter((c) => c !== '_row');
       for (const col of columns) {
         const th = document.createElement('th');
         th.textContent = col;
         headerRow.appendChild(th);
       }
+      const actionsTh = document.createElement('th');
+      actionsTh.textContent = '操作';
+      headerRow.appendChild(actionsTh);
+
       for (const row of rows) {
         const tr = document.createElement('tr');
         for (const col of columns) {
@@ -144,15 +180,44 @@
           td.innerHTML = String(row[col] ?? '');
           tr.appendChild(td);
         }
+        const actionsTd = document.createElement('td');
+        actionsTd.className = 'rowActions';
+
+        const editButton = document.createElement('button');
+        editButton.textContent = '編輯';
+        editButton.addEventListener('click', () => startEdit(row));
+        actionsTd.appendChild(editButton);
+
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = '刪除';
+        deleteButton.addEventListener('click', () => deleteRow(row));
+        actionsTd.appendChild(deleteButton);
+
+        tr.appendChild(actionsTd);
         bodyRows.appendChild(tr);
       }
       table.style.display = 'table';
     }
 
-    // 新增：Google 會擋掉 fetch()/XHR 對 Apps Script 的請求（連
-    // no-cors 模式都一樣，實測回 503），只有 <script> 標籤、表單送出、
-    // 瀏覽器導覽不會被擋。所以寫入改用「隱藏表單送到隱藏 iframe」，
-    // 送得出去但讀不到回應內容，送完等一下再重新讀取一次工作表確認。
+    function startEdit(row) {
+      editingRow = row._row;
+      formTitle.textContent = `編輯第 ${row._row} 列`;
+      addBtn.textContent = '更新';
+      cancelEditBtn.style.display = 'inline-block';
+      fieldTitle.value = row['標題'] ?? '';
+      fieldContent.value = row['內容'] ?? '';
+      if (sheetSelect.value !== '備忘錄') {
+        document.getElementById('fieldSubTag1').value = row['子標籤①'] ?? '';
+        document.getElementById('fieldSubTag2').value = row['子標籤②'] ?? '';
+      }
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }
+
+    // 寫入：Google 會擋掉 fetch()/XHR 對 Apps Script 的請求（連 no-cors
+    // 模式都一樣，實測回 503），只有 <script> 標籤、表單送出、瀏覽器
+    // 導覽不會被擋。所以新增/更新/刪除都改用「隱藏表單送到隱藏
+    // iframe」，送得出去但讀不到回應內容，送完等一下再重新讀取一次
+    // 工作表確認。
     function submitViaHiddenForm(apiUrl, params) {
       return new Promise((resolve) => {
         const iframeName = `hiddenTarget_${Date.now()}`;
@@ -182,7 +247,7 @@
       });
     }
 
-    document.getElementById('addBtn').addEventListener('click', async () => {
+    addBtn.addEventListener('click', async () => {
       const apiUrl = apiUrlInput.value.trim();
       const sheet = sheetSelect.value;
       if (!apiUrl) {
@@ -200,19 +265,45 @@
         fields['子標籤②'] = document.getElementById('fieldSubTag2').value;
       }
 
-      addStatusEl.textContent = '寫入中...';
+      const isEditing = editingRow !== null;
+      addStatusEl.textContent = isEditing ? '更新中...' : '寫入中...';
       try {
-        await submitViaHiddenForm(apiUrl, { sheet, fields: JSON.stringify(fields) });
+        const params = { sheet, fields: JSON.stringify(fields) };
+        if (isEditing) {
+          params.action = 'update';
+          params.row = editingRow;
+        }
+        await submitViaHiddenForm(apiUrl, params);
         addStatusEl.textContent = '已送出，確認中...';
         await new Promise((r) => setTimeout(r, 2000));
         await loadSheet();
-        addStatusEl.textContent = '新增完成';
-        fieldTitle.value = '';
-        fieldContent.value = '';
+        addStatusEl.textContent = isEditing ? '更新完成' : '新增完成';
+        exitEditMode();
       } catch (err) {
         addStatusEl.textContent = '寫入失敗：' + err.message;
       }
     });
+
+    async function deleteRow(row) {
+      const apiUrl = apiUrlInput.value.trim();
+      const sheet = sheetSelect.value;
+      if (!apiUrl) {
+        statusEl.textContent = '請先貼上 API 網址';
+        return;
+      }
+      const title = row['標題'] || '(無標題)';
+      if (!confirm(`確定要刪除「${title}」嗎？（軟刪除，資料仍保留在 Sheets 裡，之後可從原始檔手動復原）`)) {
+        return;
+      }
+      statusEl.textContent = '刪除中...';
+      try {
+        await submitViaHiddenForm(apiUrl, { sheet, action: 'delete', row: row._row });
+        await new Promise((r) => setTimeout(r, 2000));
+        await loadSheet();
+      } catch (err) {
+        statusEl.textContent = '刪除失敗：' + err.message;
+      }
+    }
   </script>
 </body>
 </html>
