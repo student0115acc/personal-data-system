@@ -15,6 +15,7 @@
   fieldset label { display: block; margin-bottom: 0.6rem; }
   fieldset input, fieldset textarea { width: 100%; box-sizing: border-box; }
   .rowActions button { font-size: 0.85rem; padding: 0.2rem 0.5rem; }
+  .revealBtn { font-size: 0.8rem; padding: 0.1rem 0.4rem; }
 </style>
 </head>
 <body>
@@ -31,6 +32,7 @@
       <option>環境疑難雜症</option>
       <option>學習筆記</option>
       <option>備忘錄</option>
+      <option>帳密資料</option>
     </select>
   </label>
   <button id="loadBtn">讀取</button>
@@ -43,62 +45,83 @@
 
   <fieldset>
     <legend id="formTitle">新增一筆到目前選的工作表</legend>
-    <div id="tagFields">
-      <label>子標籤①<input id="fieldSubTag1" type="text" /></label>
-      <label>子標籤②<input id="fieldSubTag2" type="text" /></label>
-    </div>
-    <label>標題<input id="fieldTitle" type="text" /></label>
-    <label>內容<textarea id="fieldContent" rows="4"></textarea></label>
+    <div id="formFields"></div>
     <button id="addBtn">新增</button>
     <button id="cancelEditBtn" style="display:none;">取消編輯</button>
     <div id="addStatus"></div>
   </fieldset>
 
-  <script>
+  <script type="module">
+    import { encryptPassword, decryptPassword } from '../src/credentials/passwordCrypto.js';
+
+    // 固定金鑰：寫死在前端程式碼中（規格書 v2 定案 R2-Q3(a)）。這層加密
+    // 主要防「不小心分享 Sheets 檢視權限」，不是防真正的攻擊者，所以
+    // 不需要每次登入輸入密碼解鎖。
+    const PASSWORD_PASSPHRASE = 'personal-data-system-2026-verdipeng';
+
+    // 每張工作表在「新增/編輯」表單裡要出現哪些欄位，依序決定表單長相。
+    const SHEET_FIELD_CONFIGS = {
+      工作紀錄: ['子標籤①', '子標籤②', '標題', '內容'],
+      環境疑難雜症: ['子標籤①', '子標籤②', '標題', '內容'],
+      學習筆記: ['子標籤①', '子標籤②', '標題', '內容'],
+      備忘錄: ['標題', '內容'],
+      帳密資料: ['子標籤①（對象/系統）', '子標籤②（類型）', '網站/系統名稱', '帳號', '密碼', '網址', '備註'],
+    };
+    const TEXTAREA_FIELDS = new Set(['內容', '備註']);
+
     const apiUrlInput = document.getElementById('apiUrl');
     const sheetSelect = document.getElementById('sheetName');
     const statusEl = document.getElementById('status');
     const table = document.getElementById('resultTable');
     const headerRow = document.getElementById('headerRow');
     const bodyRows = document.getElementById('bodyRows');
-    const tagFields = document.getElementById('tagFields');
-    const fieldTitle = document.getElementById('fieldTitle');
-    const fieldContent = document.getElementById('fieldContent');
+    const formFieldsEl = document.getElementById('formFields');
     const addStatusEl = document.getElementById('addStatus');
     const formTitle = document.getElementById('formTitle');
     const addBtn = document.getElementById('addBtn');
     const cancelEditBtn = document.getElementById('cancelEditBtn');
 
-    // 記住上次填過的網址，下次打開不用重貼
     apiUrlInput.value = localStorage.getItem('apiUrl') || '';
 
-    // 目前正在編輯哪一列（null = 新增模式）
     let editingRow = null;
 
-    // 備忘錄沒有子標籤①②欄位，切換工作表時把那兩個輸入框藏起來
-    function updateFormForSheet() {
-      tagFields.style.display = sheetSelect.value === '備忘錄' ? 'none' : 'block';
+    function fieldInputId(fieldName) {
+      return 'field_' + fieldName.replace(/[^\w]/g, '_');
     }
+
+    function buildForm() {
+      const sheet = sheetSelect.value;
+      const fields = SHEET_FIELD_CONFIGS[sheet] || [];
+      formFieldsEl.innerHTML = '';
+      for (const fieldName of fields) {
+        const label = document.createElement('label');
+        label.textContent = fieldName;
+        const input = TEXTAREA_FIELDS.has(fieldName)
+          ? document.createElement('textarea')
+          : document.createElement('input');
+        if (input.tagName === 'TEXTAREA') input.rows = 4;
+        else input.type = fieldName === '密碼' ? 'password' : 'text';
+        input.id = fieldInputId(fieldName);
+        label.appendChild(input);
+        formFieldsEl.appendChild(label);
+      }
+    }
+
     sheetSelect.addEventListener('change', () => {
       exitEditMode();
-      updateFormForSheet();
+      buildForm();
     });
-    updateFormForSheet();
+    buildForm();
 
     function exitEditMode() {
       editingRow = null;
       formTitle.textContent = '新增一筆到目前選的工作表';
       addBtn.textContent = '新增';
       cancelEditBtn.style.display = 'none';
-      fieldTitle.value = '';
-      fieldContent.value = '';
-      if (document.getElementById('fieldSubTag1')) document.getElementById('fieldSubTag1').value = '';
-      if (document.getElementById('fieldSubTag2')) document.getElementById('fieldSubTag2').value = '';
+      buildForm();
     }
     cancelEditBtn.addEventListener('click', exitEditMode);
 
-    // Apps Script Web App 不支援跨網域 fetch()（會被 CORS 擋下來），
-    // 讀取一律改用 JSONP：動態插入 <script> 標籤載入，不受 CORS 限制。
     function jsonp(url) {
       return new Promise((resolve, reject) => {
         const callbackName = `jsonpCallback_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -121,8 +144,6 @@
       });
     }
 
-    let lastRows = [];
-
     async function loadSheet() {
       const apiUrl = apiUrlInput.value.trim();
       const sheet = sheetSelect.value;
@@ -140,10 +161,8 @@
           statusEl.textContent = '錯誤：' + data.error;
           return;
         }
-        // 已刪除的資料預設不顯示（軟刪除，資料還在 Sheets 裡，只是不列出來）
         const visibleRows = data.rows.filter((r) => r['已刪除'] !== true && r['已刪除'] !== 'TRUE');
-        lastRows = visibleRows;
-        renderTable(visibleRows);
+        renderTable(visibleRows, sheet);
         statusEl.textContent = `共 ${visibleRows.length} 筆（${sheet}，不含已刪除）`;
       } catch (err) {
         statusEl.textContent = '讀取失敗：' + err.message;
@@ -155,14 +174,13 @@
       loadSheet();
     });
 
-    function renderTable(rows) {
+    function renderTable(rows, sheet) {
       headerRow.innerHTML = '';
       bodyRows.innerHTML = '';
       if (rows.length === 0) {
         table.style.display = 'none';
         return;
       }
-      // _row 是內部用的列號，不當作一般欄位顯示
       const columns = Object.keys(rows[0]).filter((c) => c !== '_row');
       for (const col of columns) {
         const th = document.createElement('th');
@@ -177,7 +195,11 @@
         const tr = document.createElement('tr');
         for (const col of columns) {
           const td = document.createElement('td');
-          td.innerHTML = String(row[col] ?? '');
+          if (col === '密碼' && row[col]) {
+            renderPasswordCell(td, row[col]);
+          } else {
+            td.innerHTML = String(row[col] ?? '');
+          }
           tr.appendChild(td);
         }
         const actionsTd = document.createElement('td');
@@ -185,7 +207,7 @@
 
         const editButton = document.createElement('button');
         editButton.textContent = '編輯';
-        editButton.addEventListener('click', () => startEdit(row));
+        editButton.addEventListener('click', () => startEdit(row, sheet));
         actionsTd.appendChild(editButton);
 
         const deleteButton = document.createElement('button');
@@ -199,25 +221,50 @@
       table.style.display = 'table';
     }
 
-    function startEdit(row) {
+    // 密碼欄位預設用星號遮蔽，按「顯示」才即時解密顯示明文。
+    function renderPasswordCell(td, cipherText) {
+      const maskedSpan = document.createElement('span');
+      maskedSpan.textContent = '••••••••';
+      const revealBtn = document.createElement('button');
+      revealBtn.className = 'revealBtn';
+      revealBtn.textContent = '顯示';
+      let revealed = false;
+      revealBtn.addEventListener('click', async () => {
+        if (revealed) {
+          maskedSpan.textContent = '••••••••';
+          revealBtn.textContent = '顯示';
+          revealed = false;
+          return;
+        }
+        try {
+          maskedSpan.textContent = await decryptPassword(cipherText, PASSWORD_PASSPHRASE);
+          revealBtn.textContent = '隱藏';
+          revealed = true;
+        } catch (err) {
+          maskedSpan.textContent = '（解密失敗）';
+        }
+      });
+      td.appendChild(maskedSpan);
+      td.appendChild(revealBtn);
+    }
+
+    function startEdit(row, sheet) {
       editingRow = row._row;
       formTitle.textContent = `編輯第 ${row._row} 列`;
       addBtn.textContent = '更新';
       cancelEditBtn.style.display = 'inline-block';
-      fieldTitle.value = row['標題'] ?? '';
-      fieldContent.value = row['內容'] ?? '';
-      if (sheetSelect.value !== '備忘錄') {
-        document.getElementById('fieldSubTag1').value = row['子標籤①'] ?? '';
-        document.getElementById('fieldSubTag2').value = row['子標籤②'] ?? '';
+      buildForm();
+      for (const fieldName of SHEET_FIELD_CONFIGS[sheet] || []) {
+        const el = document.getElementById(fieldInputId(fieldName));
+        if (!el) continue;
+        // 密碼欄位存的是密文，編輯時不預填（要改就整個重打新密碼），
+        // 避免不小心把密文原樣存回去。
+        if (fieldName === '密碼') continue;
+        el.value = row[fieldName] ?? '';
       }
       window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }
 
-    // 寫入：Google 會擋掉 fetch()/XHR 對 Apps Script 的請求（連 no-cors
-    // 模式都一樣，實測回 503），只有 <script> 標籤、表單送出、瀏覽器
-    // 導覽不會被擋。所以新增/更新/刪除都改用「隱藏表單送到隱藏
-    // iframe」，送得出去但讀不到回應內容，送完等一下再重新讀取一次
-    // 工作表確認。
     function submitViaHiddenForm(apiUrl, params) {
       return new Promise((resolve) => {
         const iframeName = `hiddenTarget_${Date.now()}`;
@@ -254,15 +301,23 @@
         addStatusEl.textContent = '請先貼上 API 網址';
         return;
       }
-      if (!fieldTitle.value.trim()) {
-        addStatusEl.textContent = '請至少填標題';
-        return;
+
+      const fieldNames = SHEET_FIELD_CONFIGS[sheet] || [];
+      const fields = {};
+      for (const fieldName of fieldNames) {
+        const el = document.getElementById(fieldInputId(fieldName));
+        if (!el) continue;
+        if (fieldName === '密碼') {
+          if (!el.value) continue; // 編輯時留空代表不改密碼
+          fields['密碼'] = await encryptPassword(el.value, PASSWORD_PASSPHRASE);
+        } else {
+          fields[fieldName] = el.value;
+        }
       }
 
-      const fields = { 標題: fieldTitle.value, 內容: fieldContent.value };
-      if (sheet !== '備忘錄') {
-        fields['子標籤①'] = document.getElementById('fieldSubTag1').value;
-        fields['子標籤②'] = document.getElementById('fieldSubTag2').value;
+      if (sheet !== '帳密資料' && !fields['標題']?.trim()) {
+        addStatusEl.textContent = '請至少填標題';
+        return;
       }
 
       const isEditing = editingRow !== null;
@@ -291,8 +346,8 @@
         statusEl.textContent = '請先貼上 API 網址';
         return;
       }
-      const title = row['標題'] || '(無標題)';
-      if (!confirm(`確定要刪除「${title}」嗎？（軟刪除，資料仍保留在 Sheets 裡，之後可從原始檔手動復原）`)) {
+      const label = row['標題'] || row['網站/系統名稱'] || '(無標題)';
+      if (!confirm(`確定要刪除「${label}」嗎？（軟刪除，資料仍保留在 Sheets 裡，之後可從原始檔手動復原）`)) {
         return;
       }
       statusEl.textContent = '刪除中...';
