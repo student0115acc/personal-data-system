@@ -47,6 +47,30 @@
     // 記住上次填過的網址，下次打開不用重貼
     apiUrlInput.value = localStorage.getItem('apiUrl') || '';
 
+    // Apps Script Web App 不支援跨網域 fetch()（會被 CORS 擋下來），
+    // 讀取一律改用 JSONP：動態插入 <script> 標籤載入，不受 CORS 限制。
+    function jsonp(url) {
+      return new Promise((resolve, reject) => {
+        const callbackName = `jsonpCallback_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+        const script = document.createElement('script');
+        const cleanup = () => {
+          delete window[callbackName];
+          script.remove();
+        };
+        window[callbackName] = (data) => {
+          resolve(data);
+          cleanup();
+        };
+        script.onerror = () => {
+          reject(new Error('JSONP 請求失敗（網路或網址錯誤）'));
+          cleanup();
+        };
+        const sep = url.includes('?') ? '&' : '?';
+        script.src = `${url}${sep}callback=${callbackName}`;
+        document.body.appendChild(script);
+      });
+    }
+
     document.getElementById('loadBtn').addEventListener('click', async () => {
       const apiUrl = apiUrlInput.value.trim();
       const sheet = sheetSelect.value;
@@ -59,8 +83,7 @@
       statusEl.textContent = '讀取中...';
       table.style.display = 'none';
       try {
-        const res = await fetch(`${apiUrl}?sheet=${encodeURIComponent(sheet)}`);
-        const data = await res.json();
+        const data = await jsonp(`${apiUrl}?sheet=${encodeURIComponent(sheet)}`);
         if (data.error) {
           statusEl.textContent = '錯誤：' + data.error;
           return;

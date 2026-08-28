@@ -12,13 +12,14 @@
  */
 
 function doGet(e) {
+  var callback = e.parameter && e.parameter.callback;
   try {
     var sheetName = (e.parameter && e.parameter.sheet) || '學習筆記';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName(sheetName);
 
     if (!sheet) {
-      return jsonResponse({ error: '找不到工作表：' + sheetName });
+      return respond({ error: '找不到工作表：' + sheetName }, callback);
     }
 
     var values = sheet.getDataRange().getValues();
@@ -31,14 +32,26 @@ function doGet(e) {
       return obj;
     });
 
-    return jsonResponse({ sheet: sheetName, rows: rows });
+    return respond({ sheet: sheetName, rows: rows }, callback);
   } catch (err) {
-    return jsonResponse({ error: String(err) });
+    return respond({ error: String(err) }, callback);
   }
 }
 
-function jsonResponse(data) {
+/**
+ * 統一回應格式。有帶 ?callback= 參數就包成 JSONP（callback(json)），
+ * 因為 Apps Script Web App 不支援跨網域 fetch()，前端讀取一律走
+ * JSONP（<script> 標籤載入，不受 CORS 限制）。沒帶 callback 就回傳
+ * 一般 JSON，方便直接在瀏覽器打開網址除錯用。
+ */
+function respond(data, callback) {
+  var json = JSON.stringify(data);
+  if (callback) {
+    return ContentService
+      .createTextOutput(callback + '(' + json + ')')
+      .setMimeType(ContentService.MimeType.JAVASCRIPT);
+  }
   return ContentService
-    .createTextOutput(JSON.stringify(data))
+    .createTextOutput(json)
     .setMimeType(ContentService.MimeType.JSON);
 }
