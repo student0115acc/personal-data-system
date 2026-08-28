@@ -33,10 +33,15 @@
       <option>學習筆記</option>
       <option>備忘錄</option>
       <option>帳密資料</option>
+      <option>採購紀錄</option>
     </select>
   </label>
   <button id="loadBtn">讀取</button>
   <div id="status"></div>
+
+  <div id="rebateBalanceCard" style="display:none; margin-top:0.8rem; padding:0.8rem 1.2rem; background:#eef6ee; border:1px solid #9c9; border-radius:6px; max-width:300px;">
+    可用回饋金餘額：<strong id="rebateBalanceValue">0</strong> 元
+  </div>
 
   <div id="filterBar" style="margin-top:0.8rem; display:none;">
     <label>關鍵字：<input id="keywordFilter" type="text" size="30" placeholder="搜尋標題/內容/子標籤" /></label>
@@ -74,6 +79,8 @@
 
   <script type="module">
     import { encryptPassword, decryptPassword } from '../src/credentials/passwordCrypto.js';
+    import { computeDisplayStatus } from '../src/purchases/computeDisplayStatus.js';
+    import { computeAvailableRebateBalance } from '../src/purchases/computeAvailableRebateBalance.js';
 
     // 固定金鑰：寫死在前端程式碼中（規格書 v2 定案 R2-Q3(a)）。這層加密
     // 主要防「不小心分享 Sheets 檢視權限」，不是防真正的攻擊者，所以
@@ -81,14 +88,39 @@
     const PASSWORD_PASSPHRASE = 'personal-data-system-2026-verdipeng';
 
     // 每張工作表在「新增/編輯」表單裡要出現哪些欄位，依序決定表單長相。
+    // 陣列項目可以是純字串（預設文字輸入框），也可以是
+    // { name, type: 'select'|'checkbox', options } 指定成下拉或勾選框。
     const SHEET_FIELD_CONFIGS = {
       工作紀錄: ['子標籤①', '子標籤②', '標題', '內容'],
       環境疑難雜症: ['子標籤①', '子標籤②', '標題', '內容'],
       學習筆記: ['子標籤①', '子標籤②', '標題', '內容'],
       備忘錄: ['標題', '內容'],
       帳密資料: ['子標籤①（對象/系統）', '子標籤②（類型）', '網站/系統名稱', '帳號', '密碼', '網址', '備註'],
+      採購紀錄: [
+        '購買日期',
+        '歸屬/請款單位',
+        '使用單位/經手人',
+        { name: '採購類型', type: 'select', options: ['公用採購', '個人採購'] },
+        '物品名稱',
+        '金額（台幣）',
+        '支付卡別',
+        '信用卡回饋金',
+        { name: '款項屬性', type: 'select', options: ['需請款撥款', '自用', '回饋金已抵用'] },
+        { name: '到貨狀態', type: 'select', options: ['未到貨', '已到貨'] },
+        { name: '請款狀態', type: 'select', options: ['未請款', '已請款'] },
+        { name: '撥款狀態', type: 'select', options: ['未撥款', '已撥款'] },
+        { name: '回饋金狀態', type: 'select', options: ['待處理', '已折抵', '已存入回饋池'] },
+        { name: '已使用', type: 'checkbox' },
+        '發票附件連結',
+        '來源網址',
+        '備註',
+      ],
     };
     const TEXTAREA_FIELDS = new Set(['內容', '備註']);
+
+    function normalizeField(fieldSpec) {
+      return typeof fieldSpec === 'string' ? { name: fieldSpec, type: 'text' } : fieldSpec;
+    }
 
     const apiUrlInput = document.getElementById('apiUrl');
     const sheetSelect = document.getElementById('sheetName');
@@ -123,23 +155,40 @@
     let currentSheetRows = []; // 目前工作表「全部」已讀取的資料（篩選前）
     let currentSheet = '';
 
-    function fieldInputId(fieldName) {
-      return 'field_' + fieldName.replace(/[^\w]/g, '_');
+    // 欄位名稱幾乎都是中文，\w 正規式對中文字元會全部替換成底線導致
+    // 不同欄位撞名（例如「帳號」「網址」都變成 field___），所以改用
+    // data-field-name 屬性＋querySelector 來找欄位，不用組字串當 id。
+    function getFieldEl(name) {
+      return formFieldsEl.querySelector(`[data-field-name="${CSS.escape(name)}"]`);
     }
 
     function buildForm() {
       const sheet = sheetSelect.value;
-      const fields = SHEET_FIELD_CONFIGS[sheet] || [];
+      const fieldSpecs = (SHEET_FIELD_CONFIGS[sheet] || []).map(normalizeField);
       formFieldsEl.innerHTML = '';
-      for (const fieldName of fields) {
+      for (const { name, type, options } of fieldSpecs) {
         const label = document.createElement('label');
-        label.textContent = fieldName;
-        const input = TEXTAREA_FIELDS.has(fieldName)
-          ? document.createElement('textarea')
-          : document.createElement('input');
-        if (input.tagName === 'TEXTAREA') input.rows = 4;
-        else input.type = fieldName === '密碼' ? 'password' : 'text';
-        input.id = fieldInputId(fieldName);
+        label.textContent = name;
+        let input;
+        if (type === 'select') {
+          input = document.createElement('select');
+          for (const opt of options) {
+            const optionEl = document.createElement('option');
+            optionEl.value = opt;
+            optionEl.textContent = opt;
+            input.appendChild(optionEl);
+          }
+        } else if (type === 'checkbox') {
+          input = document.createElement('input');
+          input.type = 'checkbox';
+        } else if (TEXTAREA_FIELDS.has(name)) {
+          input = document.createElement('textarea');
+          input.rows = 4;
+        } else {
+          input = document.createElement('input');
+          input.type = name === '密碼' ? 'password' : 'text';
+        }
+        input.dataset.fieldName = name;
         label.appendChild(input);
         formFieldsEl.appendChild(label);
       }
@@ -203,6 +252,7 @@
         currentSheetRows = visibleRows;
         currentSheet = sheet;
         setupFilterBar(sheet, visibleRows);
+        updateRebateBalanceCard(sheet, visibleRows);
         applyFilters();
       } catch (err) {
         statusEl.textContent = '讀取失敗：' + err.message;
@@ -213,6 +263,19 @@
       exitEditMode();
       loadSheet();
     });
+
+    // 採購紀錄頁籤最上方的可用回饋金餘額卡片（規格書 4.2 節，單一數字
+    // 卡片，不分卡別統計）。
+    function updateRebateBalanceCard(sheet, rows) {
+      const card = document.getElementById('rebateBalanceCard');
+      if (sheet !== '採購紀錄') {
+        card.style.display = 'none';
+        return;
+      }
+      document.getElementById('rebateBalanceValue').textContent =
+        computeAvailableRebateBalance(rows).toLocaleString('zh-TW');
+      card.style.display = 'block';
+    }
 
     // 依目前工作表決定要不要顯示子標籤篩選、把選項填好（子標籤②只列
     // 出屬於目前選定子標籤①底下的選項，跟新增表單一樣是階層式篩選）。
@@ -282,6 +345,12 @@
         return;
       }
       const columns = Object.keys(rows[0]).filter((c) => c !== '_row');
+      const showDisplayStatus = sheet === '採購紀錄';
+      if (showDisplayStatus) {
+        const th = document.createElement('th');
+        th.textContent = '顯示狀態';
+        headerRow.appendChild(th);
+      }
       for (const col of columns) {
         const th = document.createElement('th');
         th.textContent = col;
@@ -293,6 +362,9 @@
 
       for (const row of rows) {
         const tr = document.createElement('tr');
+        if (showDisplayStatus) {
+          tr.appendChild(renderDisplayStatusCell(row));
+        }
         for (const col of columns) {
           const td = document.createElement('td');
           if (col === '密碼' && row[col]) {
@@ -319,6 +391,28 @@
         bodyRows.appendChild(tr);
       }
       table.style.display = 'table';
+    }
+
+    // 規格書 4.2 節顯示狀態燈號建議色 → 實際 CSS 顏色
+    const STATUS_COLOR_MAP = {
+      gray: '#999',
+      blue: '#3b82f6',
+      red: '#ef4444',
+      orange: '#f97316',
+      yellow: '#eab308',
+      green: '#22c55e',
+    };
+
+    function renderDisplayStatusCell(row) {
+      const td = document.createElement('td');
+      const status = computeDisplayStatus(row);
+      if (status) {
+        const badge = document.createElement('span');
+        badge.textContent = status.text;
+        badge.style.cssText = `padding:0.15rem 0.5rem; border-radius:4px; color:#fff; background:${STATUS_COLOR_MAP[status.color] || '#999'};`;
+        td.appendChild(badge);
+      }
+      return td;
     }
 
     // 密碼欄位預設用星號遮蔽，按「顯示」才即時解密顯示明文。
@@ -354,13 +448,17 @@
       addBtn.textContent = '更新';
       cancelEditBtn.style.display = 'inline-block';
       buildForm();
-      for (const fieldName of SHEET_FIELD_CONFIGS[sheet] || []) {
-        const el = document.getElementById(fieldInputId(fieldName));
+      for (const { name, type } of (SHEET_FIELD_CONFIGS[sheet] || []).map(normalizeField)) {
+        const el = getFieldEl(name);
         if (!el) continue;
         // 密碼欄位存的是密文，編輯時不預填（要改就整個重打新密碼），
         // 避免不小心把密文原樣存回去。
-        if (fieldName === '密碼') continue;
-        el.value = row[fieldName] ?? '';
+        if (name === '密碼') continue;
+        if (type === 'checkbox') {
+          el.checked = row[name] === true || row[name] === 'TRUE';
+        } else {
+          el.value = row[name] ?? '';
+        }
       }
       window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     }
@@ -402,21 +500,28 @@
         return;
       }
 
-      const fieldNames = SHEET_FIELD_CONFIGS[sheet] || [];
+      const fieldSpecs = (SHEET_FIELD_CONFIGS[sheet] || []).map(normalizeField);
       const fields = {};
-      for (const fieldName of fieldNames) {
-        const el = document.getElementById(fieldInputId(fieldName));
+      for (const { name, type } of fieldSpecs) {
+        const el = getFieldEl(name);
         if (!el) continue;
-        if (fieldName === '密碼') {
+        if (name === '密碼') {
           if (!el.value) continue; // 編輯時留空代表不改密碼
           fields['密碼'] = await encryptPassword(el.value, PASSWORD_PASSPHRASE);
+        } else if (type === 'checkbox') {
+          fields[name] = el.checked;
         } else {
-          fields[fieldName] = el.value;
+          fields[name] = el.value;
         }
       }
 
-      if (sheet !== '帳密資料' && !fields['標題']?.trim()) {
-        addStatusEl.textContent = '請至少填標題';
+      const REQUIRED_FIELD_BY_SHEET = {
+        帳密資料: '網站/系統名稱',
+        採購紀錄: '物品名稱',
+      };
+      const requiredField = REQUIRED_FIELD_BY_SHEET[sheet] || '標題';
+      if (!String(fields[requiredField] ?? '').trim()) {
+        addStatusEl.textContent = `請至少填「${requiredField}」`;
         return;
       }
 
