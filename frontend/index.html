@@ -5,11 +5,15 @@
 <title>個人資料整理系統</title>
 <style>
   body { font-family: "Microsoft JhengHei", sans-serif; margin: 2rem; }
-  select, button { font-size: 1rem; padding: 0.3rem 0.6rem; margin-right: 0.5rem; }
+  select, button, input, textarea { font-size: 1rem; padding: 0.3rem 0.6rem; }
+  button { margin-right: 0.5rem; }
   table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
   th, td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
   th { background: #f0f0f0; }
   #status { color: #666; margin-top: 0.5rem; }
+  fieldset { margin-top: 1.5rem; max-width: 500px; }
+  fieldset label { display: block; margin-bottom: 0.6rem; }
+  fieldset input, fieldset textarea { width: 100%; box-sizing: border-box; }
 </style>
 </head>
 <body>
@@ -36,6 +40,18 @@
     <tbody id="bodyRows"></tbody>
   </table>
 
+  <fieldset>
+    <legend>新增一筆到目前選的工作表</legend>
+    <div id="tagFields">
+      <label>子標籤①<input id="fieldSubTag1" type="text" /></label>
+      <label>子標籤②<input id="fieldSubTag2" type="text" /></label>
+    </div>
+    <label>標題<input id="fieldTitle" type="text" /></label>
+    <label>內容<textarea id="fieldContent" rows="4"></textarea></label>
+    <button id="addBtn">新增</button>
+    <div id="addStatus"></div>
+  </fieldset>
+
   <script>
     const apiUrlInput = document.getElementById('apiUrl');
     const sheetSelect = document.getElementById('sheetName');
@@ -43,9 +59,20 @@
     const table = document.getElementById('resultTable');
     const headerRow = document.getElementById('headerRow');
     const bodyRows = document.getElementById('bodyRows');
+    const tagFields = document.getElementById('tagFields');
+    const fieldTitle = document.getElementById('fieldTitle');
+    const fieldContent = document.getElementById('fieldContent');
+    const addStatusEl = document.getElementById('addStatus');
 
     // 記住上次填過的網址，下次打開不用重貼
     apiUrlInput.value = localStorage.getItem('apiUrl') || '';
+
+    // 備忘錄沒有子標籤①②欄位，切換工作表時把那兩個輸入框藏起來
+    function updateFormForSheet() {
+      tagFields.style.display = sheetSelect.value === '備忘錄' ? 'none' : 'block';
+    }
+    sheetSelect.addEventListener('change', updateFormForSheet);
+    updateFormForSheet();
 
     // Apps Script Web App 不支援跨網域 fetch()（會被 CORS 擋下來），
     // 讀取一律改用 JSONP：動態插入 <script> 標籤載入，不受 CORS 限制。
@@ -71,7 +98,7 @@
       });
     }
 
-    document.getElementById('loadBtn').addEventListener('click', async () => {
+    async function loadSheet() {
       const apiUrl = apiUrlInput.value.trim();
       const sheet = sheetSelect.value;
       if (!apiUrl) {
@@ -93,7 +120,9 @@
       } catch (err) {
         statusEl.textContent = '讀取失敗：' + err.message;
       }
-    });
+    }
+
+    document.getElementById('loadBtn').addEventListener('click', loadSheet);
 
     function renderTable(rows) {
       headerRow.innerHTML = '';
@@ -119,6 +148,71 @@
       }
       table.style.display = 'table';
     }
+
+    // 新增：Google 會擋掉 fetch()/XHR 對 Apps Script 的請求（連
+    // no-cors 模式都一樣，實測回 503），只有 <script> 標籤、表單送出、
+    // 瀏覽器導覽不會被擋。所以寫入改用「隱藏表單送到隱藏 iframe」，
+    // 送得出去但讀不到回應內容，送完等一下再重新讀取一次工作表確認。
+    function submitViaHiddenForm(apiUrl, params) {
+      return new Promise((resolve) => {
+        const iframeName = `hiddenTarget_${Date.now()}`;
+        const iframe = document.createElement('iframe');
+        iframe.name = iframeName;
+        iframe.style.display = 'none';
+        iframe.addEventListener('load', () => {
+          resolve();
+          setTimeout(() => iframe.remove(), 0);
+        });
+        document.body.appendChild(iframe);
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = apiUrl;
+        form.target = iframeName;
+        form.style.display = 'none';
+        for (const [name, value] of Object.entries(params)) {
+          const input = document.createElement('input');
+          input.name = name;
+          input.value = value;
+          form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
+        form.remove();
+      });
+    }
+
+    document.getElementById('addBtn').addEventListener('click', async () => {
+      const apiUrl = apiUrlInput.value.trim();
+      const sheet = sheetSelect.value;
+      if (!apiUrl) {
+        addStatusEl.textContent = '請先貼上 API 網址';
+        return;
+      }
+      if (!fieldTitle.value.trim()) {
+        addStatusEl.textContent = '請至少填標題';
+        return;
+      }
+
+      const fields = { 標題: fieldTitle.value, 內容: fieldContent.value };
+      if (sheet !== '備忘錄') {
+        fields['子標籤①'] = document.getElementById('fieldSubTag1').value;
+        fields['子標籤②'] = document.getElementById('fieldSubTag2').value;
+      }
+
+      addStatusEl.textContent = '寫入中...';
+      try {
+        await submitViaHiddenForm(apiUrl, { sheet, fields: JSON.stringify(fields) });
+        addStatusEl.textContent = '已送出，確認中...';
+        await new Promise((r) => setTimeout(r, 2000));
+        await loadSheet();
+        addStatusEl.textContent = '新增完成';
+        fieldTitle.value = '';
+        fieldContent.value = '';
+      } catch (err) {
+        addStatusEl.textContent = '寫入失敗：' + err.message;
+      }
+    });
   </script>
 </body>
 </html>
